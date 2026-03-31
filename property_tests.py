@@ -323,3 +323,213 @@ def test_cut_property(G):
             )
             assert d["weight"] >= max_path_weight
 
+
+
+# Metamorphic: Scaling all edge weights by a constant k → same MST structure, total weight multiplied by k
+@given(G=connected_graphs(), k=st.integers(min_value=1, max_value=50))
+@settings(max_examples=200)
+def test_scaling_weights_preserves_mst_structure(G, k):
+    """
+    Property: If all edge weights in G are multiplied by a positive constant k,
+    the MST must have the same edge structure, and its total weight must be
+    exactly k times the original MST's total weight.
+
+    Why it matters:
+        The MST is determined by the relative ordering of edge weights, not their
+        absolute values. Scaling all weights uniformly preserves this ordering,
+        so the same set of edges must be chosen. This metamorphic property verifies
+        that Prim's algorithm is invariant to uniform weight scaling — a fundamental
+        expectation for any correct MST algorithm.
+
+    Mathematical reasoning:
+        Let G' be the graph obtained by multiplying every edge weight in G by k > 0.
+        For any spanning tree T, W(T in G') = k * W(T in G). Since multiplication
+        by a positive constant preserves the ordering of sums, the tree that
+        minimizes W(T in G) also minimizes W(T in G'). Therefore:
+        - E(MST(G')) = E(MST(G))  (same edges)
+        - W(MST(G')) = k * W(MST(G))  (scaled total weight)
+
+    Test input:
+        Random connected undirected weighted graphs with 2 to 50 nodes and a
+        random positive scaling factor k in [1, 50]. Connectivity is guaranteed
+        by starting with a spanning path through all nodes, then optionally
+        adding extra random edges with weights in [1, 100].
+
+    Assumptions / Preconditions:
+        - The input graph is connected (ensured by the connected_graphs strategy).
+        - The scaling factor k is a positive integer (k >= 1).
+        - The MST is unique for the given graph. If multiple MSTs exist with the
+          same total weight, the edge sets may differ due to tie-breaking, but
+          the total weight relationship must still hold.
+
+    What a failure indicates:
+        If the edge structure changes, Prim's algorithm is sensitive to absolute
+        weight magnitudes rather than relative ordering — suggesting a bug in
+        weight comparison logic. If the total weight is not exactly k times the
+        original, there is an arithmetic or weight-propagation error in the
+        algorithm.
+    """
+    # Compute MST on original graph
+    mst_original = nx.minimum_spanning_tree(G, algorithm="prim")
+    original_weight = sum(d["weight"] for _, _, d in mst_original.edges(data=True))
+    original_edges = set(tuple(sorted(e)) for e in mst_original.edges())
+
+    # Create scaled graph
+    G_scaled = G.copy()
+    for u, v, d in G_scaled.edges(data=True):
+        d["weight"] = d["weight"] * k
+
+    # Compute MST on scaled graph
+    mst_scaled = nx.minimum_spanning_tree(G_scaled, algorithm="prim")
+    scaled_weight = sum(d["weight"] for _, _, d in mst_scaled.edges(data=True))
+    scaled_edges = set(tuple(sorted(e)) for e in mst_scaled.edges())
+
+    assert scaled_edges == original_edges
+    assert scaled_weight == original_weight * k
+
+
+# Metamorphic: Adding a new edge heavier than all MST edges → MST remains unchanged
+@given(G=connected_graphs())
+@settings(max_examples=200)
+def test_adding_heavier_edge_preserves_mst(G):
+    """
+    Property: If a new edge is added to G whose weight is strictly greater than
+    every edge in the current MST, the MST must remain completely unchanged.
+
+    Why it matters:
+        The MST is built from the lightest edges that keep the tree connected
+        and acyclic. Adding an edge that is heavier than all existing MST edges
+        can never improve the MST — it would only be considered if it connected
+        a previously unreachable node, but since G is already connected, it
+        cannot. This metamorphic property verifies that Prim's algorithm
+        correctly ignores irrelevant heavy edges.
+
+    Mathematical reasoning:
+        Let T be the MST of G, and let e = (u, v) be a new edge with
+        w(e) > max{w(f) : f in E(T)}. Since T already connects u and v via
+        some path, adding e creates a cycle. By the cycle property, the heaviest
+        edge in any cycle cannot be in the MST. Since w(e) is strictly greater
+        than every MST edge, e is the heaviest edge in the cycle and will not
+        replace any existing MST edge. Therefore W(MST(G + e)) = W(MST(G)).
+
+        Note: We compare total weights rather than edge sets because when
+        multiple MSTs of equal weight exist, Prim's tie-breaking order may
+        change when the adjacency structure changes, producing a different
+        but equally valid MST.
+
+    Test input:
+        Random connected undirected weighted graphs with 2 to 50 nodes. The new
+        edge is added between two nodes that do NOT already share an edge, with
+        a weight equal to (max MST edge weight + 1), guaranteeing it is heavier
+        than all MST edges. Edge weights are integers in [1, 100].
+
+    Assumptions / Preconditions:
+        - The input graph is connected (ensured by the connected_graphs strategy).
+        - The graph has at least one pair of non-adjacent nodes (ensured by assume()).
+        - The new edge's weight is strictly greater than all MST edge weights.
+
+    What a failure indicates:
+        If the MST total weight changes after adding a heavier edge, Prim's
+        algorithm is incorrectly preferring the new heavy edge over existing
+        lighter edges. This would suggest a bug in the priority queue ordering
+        or the weight comparison logic — the algorithm is not correctly selecting
+        the minimum weight edge at each step.
+    """
+    from hypothesis import assume
+
+    mst_original = nx.minimum_spanning_tree(G, algorithm="prim")
+    original_weight = sum(d["weight"] for _, _, d in mst_original.edges(data=True))
+
+    # Find the max weight in the MST
+    max_mst_weight = max(d["weight"] for _, _, d in mst_original.edges(data=True))
+
+    # Find a pair of nodes that are NOT already connected by an edge,
+    # so that add_edge does not overwrite an existing (possibly lighter) edge.
+    non_edges = list(nx.non_edges(G))
+    assume(len(non_edges) > 0)
+
+    G_modified = G.copy()
+    u, v = non_edges[0]
+    G_modified.add_edge(u, v, weight=max_mst_weight + 1)
+
+    mst_modified = nx.minimum_spanning_tree(G_modified, algorithm="prim")
+    modified_weight = sum(d["weight"] for _, _, d in mst_modified.edges(data=True))
+
+    assert modified_weight == original_weight
+
+
+# Metamorphic: Removing a non-MST edge from the original graph → MST remains unchanged
+@given(G=connected_graphs())
+@settings(max_examples=200)
+def test_removing_non_mst_edge_preserves_mst(G):
+    """
+    Property: If an edge that is NOT part of the MST is removed from G, the
+    MST must remain completely unchanged.
+
+    Why it matters:
+        Non-MST edges are, by definition, not used in the minimum spanning tree.
+        Removing them from the graph should have no effect on the MST output.
+        This metamorphic property verifies that Prim's algorithm's result depends
+        only on the edges it actually selects, and is not influenced by the
+        presence or absence of unused edges.
+
+    Mathematical reasoning:
+        Let T be the MST of G, and let e ∈ E(G) \ E(T) be a non-tree edge.
+        Since e ∉ E(T), the tree T is also a spanning tree of G' = G - e
+        (provided G' remains connected). T is still minimum in G' because:
+        - T was optimal among all spanning trees of G.
+        - The set of spanning trees of G' is a subset of spanning trees of G
+          (removing an edge can only eliminate spanning trees, not create new ones).
+        - T does not use e, so T is still a valid spanning tree of G'.
+        Therefore MST(G - e) = MST(G).
+
+    Test input:
+        Random connected undirected weighted graphs with 2 to 50 nodes. The test
+        identifies non-MST edges and removes one, then verifies the MST is
+        unchanged. If no non-MST edges exist (the graph is itself a tree), the
+        test is skipped via assume().
+
+    Assumptions / Preconditions:
+        - The input graph is connected (ensured by the connected_graphs strategy).
+        - The graph has at least one non-MST edge (ensured by assume()).
+        - Removing the non-MST edge does not disconnect the graph. This is
+          guaranteed because the MST (which remains intact) still connects
+          all nodes.
+
+    What a failure indicates:
+        If the MST total weight changes after removing a non-MST edge, Prim's
+        algorithm is producing inconsistent results — its output depends on
+        edges it doesn't even use. This would suggest a bug in how the algorithm
+        explores the frontier or processes the adjacency list, where the mere
+        presence of an edge affects the selection of other edges.
+
+        Note: We compare total weights rather than edge sets because when
+        multiple MSTs of equal weight exist, Prim's tie-breaking order may
+        change when the adjacency structure changes, producing a different
+        but equally valid MST.
+    """
+    from hypothesis import assume
+
+    mst_original = nx.minimum_spanning_tree(G, algorithm="prim")
+    mst_edge_set = set(tuple(sorted(e)) for e in mst_original.edges())
+    original_weight = sum(d["weight"] for _, _, d in mst_original.edges(data=True))
+
+    # Find non-MST edges
+    non_mst_edges = [
+        (u, v) for u, v in G.edges()
+        if tuple(sorted((u, v))) not in mst_edge_set
+    ]
+
+    # Skip if the graph is already a tree (no non-MST edges to remove)
+    assume(len(non_mst_edges) > 0)
+
+    # Remove one non-MST edge
+    G_modified = G.copy()
+    G_modified.remove_edge(*non_mst_edges[0])
+
+    mst_modified = nx.minimum_spanning_tree(G_modified, algorithm="prim")
+    modified_weight = sum(d["weight"] for _, _, d in mst_modified.edges(data=True))
+
+    assert modified_weight == original_weight
+
+
