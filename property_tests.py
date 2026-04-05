@@ -583,3 +583,363 @@ def test_mst_is_idempotent(G):
 
     assert second_edges == first_edges
     assert second_weight == first_weight
+
+
+# Commutativity: Relabeling nodes and running Prim's should give an isomorphic MST
+@given(G=connected_graphs())
+@settings(max_examples=200)
+def test_mst_is_invariant_to_node_relabeling(G):
+    """
+    Property: Relabeling (renaming) all nodes in G and running Prim's MST on
+    the relabeled graph must produce an MST that is isomorphic to the MST of
+    the original graph — same structure, same total weight.
+
+    Why it matters:
+        The MST depends on the graph's topology and edge weights, not on the
+        arbitrary labels assigned to nodes. Node labels are just identifiers;
+        renaming node 0 to node 99 should not change which edges are selected
+        or the total cost of the tree. This commutativity property verifies
+        that Prim's algorithm treats the graph as an abstract structure and is
+        not influenced by the specific numeric values of node identifiers.
+
+    Mathematical reasoning:
+        Let G' = relabel(G, mapping) be the graph obtained by applying a
+        bijective node renaming. G and G' are isomorphic by construction —
+        they have the same topology and edge weights. Since the MST is a
+        graph-theoretic property that depends only on structure and weights:
+        - W(MST(G')) = W(MST(G))  (same total weight)
+        - MST(G') is isomorphic to MST(G) (same tree structure up to relabeling)
+        We verify the total weight equality as the primary assertion, since
+        isomorphism checking on weighted trees is expensive and weight equality
+        is a necessary condition for isomorphism.
+
+    Test input:
+        Random connected undirected weighted graphs with 2 to 50 nodes. The
+        relabeling shifts every node label by a fixed offset (n, so node i
+        becomes node n + i), creating a completely disjoint label space.
+        Connectivity is guaranteed by starting with a spanning path through
+        all nodes, then optionally adding extra random edges with weights
+        in [1, 100].
+
+    Assumptions / Preconditions:
+        - The input graph is connected (ensured by the connected_graphs strategy).
+        - The input graph is undirected and simple (no self-loops or parallel edges).
+        - The relabeling is a bijection (one-to-one mapping), so the graph
+          structure is perfectly preserved.
+
+    What a failure indicates:
+        If the total weight differs after relabeling, Prim's algorithm is
+        sensitive to node identity rather than graph structure. This would
+        suggest a bug where the algorithm uses node labels in comparisons
+        or ordering decisions (e.g., using node IDs to break ties in the
+        priority queue in a way that changes which edges are selected),
+        leading to a different and potentially suboptimal spanning tree.
+    """
+    # Compute MST on original graph
+    mst_original = nx.minimum_spanning_tree(G, algorithm="prim")
+    original_weight = sum(d["weight"] for _, _, d in mst_original.edges(data=True))
+
+    # Relabel all nodes: node i -> node (n + i)
+    n = G.number_of_nodes()
+    mapping = {node: node + n for node in G.nodes()}
+    G_relabeled = nx.relabel_nodes(G, mapping)
+
+    # Compute MST on relabeled graph
+    mst_relabeled = nx.minimum_spanning_tree(G_relabeled, algorithm="prim")
+    relabeled_weight = sum(d["weight"] for _, _, d in mst_relabeled.edges(data=True))
+
+    assert relabeled_weight == original_weight
+
+
+# Boundary: Single node graph → 0 edges
+@given(node_id=st.integers(min_value=0, max_value=1000))
+@settings(max_examples=200)
+def test_single_node_graph_has_zero_edges(node_id):
+    """
+    Property: The MST of a graph with a single node must have exactly 0 edges.
+
+    Why it matters:
+        A single-node graph is the smallest possible graph. It has no edges to
+        connect, so the MST must be the node itself with no edges. This boundary
+        condition tests that Prim's algorithm handles the degenerate case
+        gracefully without crashing, producing phantom edges, or failing to
+        return a valid result.
+
+    Mathematical reasoning:
+        A tree with n = 1 node has n - 1 = 0 edges. The only spanning tree of
+        a single-node graph is the graph itself — a single isolated node. The
+        MST must therefore contain exactly 1 node and 0 edges, with a total
+        weight of 0.
+
+    Test input:
+        A graph containing a single node with a randomly generated node ID
+        in [0, 1000]. No edges are present. The node ID is varied to ensure
+        the algorithm does not depend on the node being labeled 0.
+
+    Assumptions / Preconditions:
+        - The input graph has exactly 1 node and 0 edges.
+        - The graph is trivially connected (a single node is connected by
+          convention).
+
+    What a failure indicates:
+        If this test fails, Prim's algorithm cannot handle the simplest possible
+        input. This would suggest a bug in initialization — the algorithm may
+        require at least one edge to function, or it may crash when the frontier
+        (priority queue) is empty from the start.
+    """
+    G = nx.Graph()
+    G.add_node(node_id)
+
+    mst = nx.minimum_spanning_tree(G, algorithm="prim")
+
+    assert mst.number_of_nodes() == 1
+    assert mst.number_of_edges() == 0
+    assert set(mst.nodes()) == {node_id}
+
+
+# Boundary: Two nodes, one edge → that edge is the MST
+@given(w=st.integers(min_value=1, max_value=1000))
+@settings(max_examples=200)
+def test_two_nodes_one_edge_is_the_mst(w):
+    """
+    Property: For a graph with exactly 2 nodes and 1 edge, the MST must
+    consist of that single edge with its original weight.
+
+    Why it matters:
+        This is the smallest non-trivial graph — the simplest case where an
+        MST edge must actually be selected. There is only one possible spanning
+        tree (the single edge itself), so the algorithm has no choice to make.
+        This boundary condition verifies that Prim's algorithm correctly handles
+        the base case and preserves edge weights in the output.
+
+    Mathematical reasoning:
+        A graph G with 2 nodes and 1 edge has exactly one spanning tree: the
+        edge itself. Therefore MST(G) = G. The MST must have:
+        - 2 nodes (both original nodes)
+        - 1 edge (the only edge)
+        - Total weight = weight of that single edge
+
+    Test input:
+        A graph with nodes 0 and 1 connected by a single edge with a randomly
+        generated weight in [1, 1000]. The weight is varied across runs to
+        ensure the algorithm correctly propagates different weight values.
+
+    Assumptions / Preconditions:
+        - The input graph has exactly 2 nodes and 1 edge.
+        - The graph is connected.
+
+    What a failure indicates:
+        If this test fails, Prim's algorithm is either losing the edge, altering
+        its weight, or failing to include both nodes. This would indicate a
+        fundamental bug in how the algorithm initializes the tree or processes
+        the very first edge from the priority queue.
+    """
+    G = nx.Graph()
+    G.add_edge(0, 1, weight=w)
+
+    mst = nx.minimum_spanning_tree(G, algorithm="prim")
+
+    assert mst.number_of_nodes() == 2
+    assert mst.number_of_edges() == 1
+    assert mst.has_edge(0, 1)
+    assert mst[0][1]["weight"] == w
+
+
+# Boundary: Disconnected graph → Prim's produces a spanning forest
+@st.composite
+def disconnected_graphs(draw):
+    """Generate a random disconnected undirected weighted graph with 2+ components."""
+    num_components = draw(st.integers(min_value=2, max_value=5))
+    G = nx.Graph()
+    node_offset = 0
+
+    for _ in range(num_components):
+        size = draw(st.integers(min_value=2, max_value=15))
+        nodes = list(range(node_offset, node_offset + size))
+
+        # Create a connected component using a spanning path
+        shuffled = draw(st.permutations(nodes))
+        for i in range(len(shuffled) - 1):
+            w = draw(st.integers(min_value=1, max_value=100))
+            G.add_edge(shuffled[i], shuffled[i + 1], weight=w)
+
+        # Add some extra edges within this component
+        num_extra = draw(st.integers(min_value=0, max_value=size))
+        for _ in range(num_extra):
+            u = draw(st.integers(min_value=node_offset, max_value=node_offset + size - 1))
+            v = draw(st.integers(min_value=node_offset, max_value=node_offset + size - 1))
+            if u != v:
+                w = draw(st.integers(min_value=1, max_value=100))
+                G.add_edge(u, v, weight=w)
+
+        node_offset += size
+
+    return G
+
+
+@given(G=disconnected_graphs())
+@settings(max_examples=200)
+def test_disconnected_graph_produces_spanning_forest(G):
+    """
+    Property: For a disconnected graph, Prim's MST must produce a spanning
+    forest — a collection of spanning trees, one per connected component.
+    The result must span all nodes, be acyclic, and have exactly
+    n - c edges (where n is the number of nodes and c is the number of
+    connected components).
+
+    Why it matters:
+        Real-world graphs are not always connected. When a graph has multiple
+        disconnected components, no single spanning tree can exist. Instead,
+        the algorithm should produce a minimum spanning forest — the union of
+        MSTs for each component. This boundary condition verifies that Prim's
+        algorithm gracefully handles disconnected input without crashing or
+        producing invalid output.
+
+    Mathematical reasoning:
+        A spanning forest of a graph G with n nodes and c connected components
+        is a subgraph that:
+        - Contains all n nodes of G
+        - Is acyclic (a forest)
+        - Has exactly n - c edges (each component's spanning tree contributes
+          size_i - 1 edges, and the sum over all components gives n - c)
+        - Is NOT connected (since the original graph is disconnected)
+        Each component's subtree must independently be a valid MST of that
+        component.
+
+    Test input:
+        Random disconnected undirected weighted graphs with 2 to 5 connected
+        components, each containing 2 to 15 nodes. Each component is internally
+        connected via a spanning path with optional extra edges. Edge weights
+        are integers in [1, 100]. Components are guaranteed to be disconnected
+        by using non-overlapping node ID ranges.
+
+    Assumptions / Preconditions:
+        - The input graph is disconnected (ensured by the disconnected_graphs
+          strategy which creates separate components with disjoint node ranges).
+        - Each individual component is connected.
+        - The graph is undirected and simple.
+
+    What a failure indicates:
+        If the node set doesn't match, Prim's is losing nodes from some
+        components. If the edge count is wrong, the algorithm is either adding
+        cross-component edges (impossible) or failing to fully span some
+        components. If cycles are present, the algorithm is including redundant
+        edges within a component. Any of these would indicate that Prim's
+        algorithm does not correctly restart its tree-growing process for each
+        disconnected component.
+    """
+    num_components = nx.number_connected_components(G)
+    n = G.number_of_nodes()
+
+    mst = nx.minimum_spanning_tree(G, algorithm="prim")
+
+    # MST must span all nodes
+    assert set(mst.nodes()) == set(G.nodes())
+
+    # MST must have exactly n - c edges (spanning forest)
+    assert mst.number_of_edges() == n - num_components
+
+    # MST must be acyclic (a forest)
+    assert nx.is_forest(mst)
+
+    # MST must NOT be connected (since the original graph is disconnected)
+    assert not nx.is_connected(mst)
+
+    # MST must have the same number of components as the original graph
+    assert nx.number_connected_components(mst) == num_components
+
+
+# Boundary: All edges with equal weight → any spanning tree is valid
+@st.composite
+def equal_weight_connected_graphs(draw):
+    """Generate a random connected graph where ALL edges have the same weight."""
+    n = draw(st.integers(min_value=2, max_value=50))
+    w = draw(st.integers(min_value=1, max_value=100))
+    nodes = list(range(n))
+
+    # Spanning path for connectivity
+    shuffled = draw(st.permutations(nodes))
+    edges = [(shuffled[i], shuffled[i + 1]) for i in range(n - 1)]
+
+    # Add extra random edges
+    num_extra = draw(st.integers(min_value=0, max_value=n * (n - 1) // 2 - (n - 1)))
+    for _ in range(num_extra):
+        u = draw(st.integers(min_value=0, max_value=n - 1))
+        v = draw(st.integers(min_value=0, max_value=n - 1))
+        if u != v:
+            edges.append((u, v))
+
+    G = nx.Graph()
+    G.add_nodes_from(nodes)
+    for u, v in edges:
+        G.add_edge(u, v, weight=w)
+
+    return G, w
+
+
+@given(data=equal_weight_connected_graphs())
+@settings(max_examples=200)
+def test_equal_weight_graph_produces_valid_mst(data):
+    """
+    Property: When all edges in a connected graph have the same weight, any
+    spanning tree is a valid MST. The result must still satisfy all structural
+    properties: n-1 edges, connectivity, acyclicity, spanning all nodes, and
+    total weight = (n - 1) * w.
+
+    Why it matters:
+        Equal-weight graphs are a degenerate case where every spanning tree has
+        the same total weight — there is no "better" or "worse" tree. This
+        boundary condition tests that Prim's algorithm does not break when there
+        are no meaningful weight comparisons to make. It also verifies that the
+        algorithm still produces a structurally valid tree even when all priority
+        queue entries are tied.
+
+    Mathematical reasoning:
+        If every edge in G has weight w, then every spanning tree T of G has
+        total weight W(T) = (n - 1) * w, since all spanning trees have exactly
+        n - 1 edges. Therefore:
+        - Any spanning tree is an MST (all are equally optimal)
+        - The algorithm must still produce a valid tree (connected, acyclic,
+          spanning all nodes, with n - 1 edges)
+        - The total weight must be exactly (n - 1) * w
+
+    Test input:
+        Random connected undirected graphs with 2 to 50 nodes where every edge
+        has the same randomly chosen weight w in [1, 100]. Connectivity is
+        guaranteed by starting with a spanning path, then optionally adding
+        extra random edges (all with the same weight w).
+
+    Assumptions / Preconditions:
+        - The input graph is connected (ensured by the spanning path construction).
+        - All edges have identical weight w.
+        - The graph is undirected and simple.
+
+    What a failure indicates:
+        If the structural properties fail (not a tree, wrong edge count, missing
+        nodes), Prim's algorithm has a bug in its core tree-building logic that
+        manifests when all weights are tied. If the total weight is wrong, the
+        algorithm is either including too many/few edges or corrupting edge
+        weights. This would suggest that the priority queue tie-breaking
+        mechanism is flawed, causing the algorithm to skip valid edges or
+        include redundant ones.
+    """
+    G, w = data
+    n = G.number_of_nodes()
+
+    mst = nx.minimum_spanning_tree(G, algorithm="prim")
+
+    # Must be a valid tree
+    assert nx.is_tree(mst)
+
+    # Must span all nodes
+    assert set(mst.nodes()) == set(G.nodes())
+
+    # Must have n-1 edges
+    assert mst.number_of_edges() == n - 1
+
+    # Must be connected
+    assert nx.is_connected(mst)
+
+    # Total weight must be (n-1) * w since all edges have the same weight
+    total_weight = sum(d["weight"] for _, _, d in mst.edges(data=True))
+    assert total_weight == (n - 1) * w
