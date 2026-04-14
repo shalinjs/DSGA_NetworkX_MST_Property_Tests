@@ -1,3 +1,24 @@
+# =============================================================================
+# Course:            E0 251o (2026)
+# Algorithm:         Prim's Minimum Spanning Tree (MST)
+#                    via networkx.minimum_spanning_tree(G, algorithm='prim')
+# Testing Framework: Hypothesis (property-based testing) with pytest
+# Team Members:      Shalin Shah
+# Algorithms Tested: Minimum Spanning Tree — prims's algorithm
+#                    
+#
+# Description:
+#   This file contains a comprehensive property-based test suite for NetworkX's
+#   MST implementation (prim's algorithm). It uses the Hypothesis library to
+#   generate diverse graph structures and verify fundamental MST properties
+#   including structural validity, minimality (cycle property), invariance,
+#   metamorphic relationships, boundary behavior, and cross-algorithm
+#   consistency. Each property test includes a detailed docstring covering
+#   mathematical reasoning, graph generation strategy, assumptions, and
+#   failure implications.
+# =============================================================================
+
+
 import networkx as nx
 from hypothesis import given, settings
 from hypothesis import strategies as st
