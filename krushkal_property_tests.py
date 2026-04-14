@@ -3,7 +3,7 @@
 # Algorithm:         Kruskal's Minimum Spanning Tree (MST)
 #                    via networkx.minimum_spanning_tree(G, algorithm='kruskal')
 # Testing Framework: Hypothesis (property-based testing) with pytest
-# Team Members:      Nitish Kumar, Shalin Shah
+# Team Members:      Nitish Kumar
 # Algorithms Tested: Minimum Spanning Tree — Kruskal's algorithm
 #                    Cross-validated against Prim's and Borůvka's algorithms
 #
